@@ -8,7 +8,7 @@ from pathlib import Path
 from src.data.data_utils import load_data, load_node_to_nearest_training
 from src.model.model import create_model
 from src.calibrator.calibrator import \
-    TS, VS, ETS, CaGCN, GATS, IRM, SplineCalib, Dirichlet, OrderInvariantCalib, RBS_cal
+    TS, VS, ETS, CaGCN, GATS, IRM, SplineCalib, Dirichlet, OrderInvariantCalib
 from src.calibloss import \
     NodewiseECE, NodewiseBrier, NodewiseNLL, Reliability, NodewiseKDE, \
     NodewiswClassECE
@@ -121,7 +121,6 @@ def main(split, init, eval_type_list, args):
     cal_val_result = create_nested_defaultdict(eval_type_list)
     cal_test_result = create_nested_defaultdict(eval_type_list)
     max_fold = int(args.split_type.split("_")[1].replace("f",""))
-    reliabilities = []
 
     for fold in range(max_fold):
         # Load data
@@ -174,10 +173,9 @@ def main(split, init, eval_type_list, args):
 
         for eval_type in eval_type_list:
             _, reliability = eval(data, logits, 'Test')
-            reliabilities.append(reliability)
             
         torch.cuda.empty_cache()
-    return reliabilities
+    return reliability
 
 
 if __name__ == '__main__':
@@ -186,16 +184,16 @@ if __name__ == '__main__':
     set_global_seeds(args.seed)
     eval_type_list = ['Nodewise']
     max_splits,  max_init = 5, 5
-
+    reliabilities = []
     uncal_test_total = create_nested_defaultdict(eval_type_list)
     cal_val_total = create_nested_defaultdict(eval_type_list)
     cal_test_total = create_nested_defaultdict(eval_type_list)
     for split in range(max_splits):
         for init in range(max_init):
-            reliabilities = main(split, init, eval_type_list, args)
-    
+            reliability = main(split, init, eval_type_list, args)
+            reliabilities.append(reliability)
     title = args.dataset+'_'+args.calibration
-    save_pth = '/root/GATS/figure/'+title+'.png'
+    save_pth = '/root/ytx/calibration-gnn/GATS/figure/confidence_acc/original/'+title+'.png'
     print(save_pth)
     plot_reliabilities(reliabilities, title=args.dataset, saveto=save_pth)       
     

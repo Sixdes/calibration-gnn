@@ -16,12 +16,10 @@ def modify_del_graph(data, delete_ratio=0.1):
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index = data.edge_index
-    num_edges = edge_index.size(1)
     dtype = edge_index.dtype
+    
     # Convert edge_index to a list of edges
     edges = edge_index.t().tolist()
-    
-    # Get node labels
     labels = data.y.cpu().numpy()
     
     # Randomly delete edges with inconsistent labels
@@ -36,25 +34,21 @@ def modify_del_graph(data, delete_ratio=0.1):
     # Convert edges back to edge_index format
     new_edge_index = torch.tensor(edges, dtype=dtype).t().contiguous().to(device)
     
-    # Create a new Data object with the modified edge_index
-    # modified_data = Data(x=data.x, edge_index=new_edge_index, y=data.y).to(device)
-    
     return new_edge_index
 
-def modify_add_graph(data, add_iteration=0):
+def modify_add_graph(data, add_num=0):
     """
     Modify the graph by randomly deleting and adding edges based on node labels.
 
     Args:
         data (Data): The graph data object from torch_geometric.
-        add_ratio (float): The ratio of edges to add between nodes with the same label.
+        add_num (float): The num of edges to add between nodes with the same label.
     
     Returns:
         Data: The modified graph data with updated edges.
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     edge_index = data.edge_index
-    num_edges = edge_index.size(1)
     dtype = edge_index.dtype
     
     # Convert edge_index to a list of edges
@@ -65,7 +59,7 @@ def modify_add_graph(data, add_iteration=0):
     num_nodes = data.num_nodes
     edges_to_add = []
     idx = 0
-    for _ in range(add_iteration):  
+    while(idx <= add_num):
         u, v = random.sample(range(num_nodes), 2)
         if labels[u] == labels[v] and [u, v] not in edges and [v, u] not in edges:
             edges_to_add.append([u, v])
@@ -73,7 +67,7 @@ def modify_add_graph(data, add_iteration=0):
             edges.append([u, v])
             edges.append([v, u])
             idx = idx + 1
-    print(f'add the num of edges: {idx}')
+    print(f'add the num of edges: {idx-1}')
     # Convert edges back to edge_index format
     new_edge_index = torch.tensor(edges, dtype=dtype).t().contiguous().to(device)
     

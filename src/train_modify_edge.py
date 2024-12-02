@@ -14,7 +14,7 @@ from src.model.model import create_model
 from src.utils import set_global_seeds, arg_parse, name_model, metric_mean, metric_std
 from src.calibloss import NodewiseECE, NodewiseBrier, NodewiseNLL
 from src.data.data_utils import load_data
-from src.data.struct_gnn import modify_add_valid_graph, modify_del_valid_graph, modify_add_graph, modify_del_graph
+from src.data.struct_gnn import modify_add_graph, modify_del_graph
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
@@ -88,10 +88,11 @@ def main(split, init, ratio, is_delete, is_add, args):
         if is_delete:
             new_edge_index = modify_del_graph(data, delete_ratio=ratio)
             print(f'the modify-delete {args.dataset} edges: {new_edge_index.size(1)} with ratio {ratio}') 
+            data.edge_index = new_edge_index
         elif is_add:   
-            new_edge_index = modify_add_valid_graph(data, add_iteration=ratio)  
+            new_edge_index = modify_add_graph(data, add_num=ratio)  
             print(f'the modeify-add {args.dataset} edges: {new_edge_index.size(1)} with iteration {ratio}')
-        data.edge_index = new_edge_index
+            data.edge_index = new_edge_index
 
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = create_model(dataset, args).to(device)
@@ -159,11 +160,15 @@ def main(split, init, ratio, is_delete, is_add, args):
         elif is_add:
             ratio_name = 'add_'+str(ratio)
         # print("best epoch is:", b_epoch)
-        dir = Path(os.path.join('model_modify_edge_valid', args.dataset, ratio_name, 'split'+str(split), 
+        dir = Path(os.path.join('model_modify_edge_all', args.dataset, ratio_name, 'split'+str(split), 
                                 'init'+ str(init)))
         dir.mkdir(parents=True, exist_ok=True)
         file_name = dir / (model_name + '.pt')
-        torch.save(state_dict_early_model, file_name)
+        print(f'new_edge_index num: {data.edge_index.size(1)}')
+        torch.save({
+                    'model_state_dict': state_dict_early_model,
+                    'new_edge_index': data.edge_index
+                    }, file_name)
     return val_result, test_result
 
 def per_ratio_train(ratio, max_splits, max_init, is_delete=False, is_add=False):
@@ -193,15 +198,14 @@ if __name__ == '__main__':
     max_splits,  max_init = 3, 2
     print(f'---------------------------training with {args.model} on {args.dataset}---------------------------')
     delete_ratio_list = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    # add_ratio_list = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    add_iteration_list = [0, 20, 60, 100, 140, 180, 220, 260, 300, 500, 1000]
+    add_num_list = [0, 20, 50, 80, 110, 140, 170, 200, 230, 260, 300]
     if args.is_edge_delete:
         for delete_ratio in delete_ratio_list:
             print(f'---------------------------training with delete {delete_ratio}---------------------------')
             per_ratio_train(delete_ratio, max_splits, max_init, is_delete=True)
     elif args.is_edge_add:
-        for add_iter in add_iteration_list:
-            print(f'---------------------------training with add {add_iter} iteration---------------------------')
-            per_ratio_train(add_iter, max_splits, max_init, is_add=True)
+        for add_num in add_num_list:
+            print(f'---------------------------training with add {add_num} edges---------------------------')
+            per_ratio_train(add_num, max_splits, max_init, is_add=True)
 
 

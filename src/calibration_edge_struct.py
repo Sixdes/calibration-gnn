@@ -17,8 +17,7 @@ from src.utils import \
     metric_mean, metric_std, default_cal_wdecay, save_prediction
 from src.calibrator import rbs
 
-from src.data.struct_gnn import modify_del_graph, modify_add_graph, modify_add_valid_graph, modify_del_valid_graph
-from src.utils import draw_del_ratio_ece
+from src.utils import draw_del_ratio_ece, plot_reliabilities
 
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
@@ -116,7 +115,7 @@ def eval(data, logits, mask_name):
     return eval_result, reliability
 
 
-def main(split, init, eval_type_list, ratio, is_delete, is_add, args):
+def main(split, init, eval_type_list, ratio, ratio_name, is_delete, is_add, args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     uncal_test_result = create_nested_defaultdict(eval_type_list)
     cal_val_result = create_nested_defaultdict(eval_type_list)
@@ -128,25 +127,28 @@ def main(split, init, eval_type_list, ratio, is_delete, is_add, args):
         dataset = load_data(args.dataset, args.split_type, split, fold)
         data = dataset.data.to(device)
         # print(f'the original {args.dataset} dataset edges: {data.edge_index.size(1)}')   
-        # modify data
-        if is_delete:
-            new_edge_index = modify_del_graph(data, delete_ratio=ratio)
-            print(f'the modify-delete {args.dataset} edges: {new_edge_index.size(1)} with ratio {ratio}') 
-            data.edge_index = new_edge_index
-            ratio_name = 'delete_'+str(ratio)
-        elif is_add:   
-            new_edge_index = modify_add_graph(data, add_iteration=ratio)  
-            print(f'the modeify-add {args.dataset} edges: {new_edge_index.size(1)} with iteration {ratio}')
-            data.edge_index = new_edge_index
-            ratio_name = 'add_'+str(ratio)
 
         # Load model
         model = create_model(dataset, args).to(device)
         model_name = name_model(fold, args)
 
+        # ratio_name = 'delete_'+str(ratio) if is_delete else 'add_'+str(ratio)
         dir = Path(os.path.join('model_modify_edge_all', args.dataset, ratio_name, 'split'+str(split), 'init'+ str(init)))
         file_name = dir / (model_name + '.pt')
-        model.load_state_dict(torch.load(file_name))
+        checkpoint = torch.load(file_name)
+
+        # modify data
+        if is_delete:
+            new_edge_index = checkpoint['new_edge_index']
+            print(f'the modify-delete {args.dataset} edges: {new_edge_index.size(1)} with ratio {ratio}') 
+            data.edge_index = new_edge_index
+            
+        elif is_add:   
+            new_edge_index =  checkpoint['new_edge_index']
+            print(f'the modeify-add {args.dataset} edges: {new_edge_index.size(1)} with num {ratio}')
+            data.edge_index = new_edge_index
+
+        model.load_state_dict(checkpoint['model_state_dict'])
         torch.cuda.empty_cache()
 
         with torch.no_grad():
@@ -154,12 +156,8 @@ def main(split, init, eval_type_list, ratio, is_delete, is_add, args):
             logits = model(data.x, data.edge_index)
             log_prob = F.log_softmax(logits, dim=1).detach()
 
-        ### Store uncalibrated result
-        if args.save_prediction:
-            save_prediction(log_prob.cpu().numpy(), args.dataset, args.split_type, split, init, fold, args.model, "uncal")
-
         for eval_type in eval_type_list:
-            eval_result, reliability = eval(data, logits, 'Test')
+            eval_result, reliability_uncal = eval(data, logits, 'Test')
             for metric in eval_result:
                 uncal_test_result[eval_type][metric].append(eval_result[metric])
         torch.cuda.empty_cache()
@@ -186,58 +184,51 @@ def main(split, init, eval_type_list, ratio, is_delete, is_add, args):
             temp_model = GATS(model, data.edge_index, data.num_nodes, data.train_mask,
                             dataset.num_classes, dist_to_train, args.gats_args)
         
-        if args.calibration == 'RBS':
-            (
-            val_probs,
-            test_probs,
-            val_logits,
-            test_logits,
-            val_labels,
-            test_labels,
-            logits,
-            probs,
-            ) = rbs.produce_logits(model, data, device)
-            cal_probs = rbs.RBS(data, probs, val_logits, val_labels, logits, args.num_bins_rbs)
-            log_prob = cal_probs
-        else:
-            ### Train the calibrator on validation set and validate it on the training set
-            cal_wdecay = args.cal_wdecay if args.cal_wdecay is not None else default_cal_wdecay(args)
-            temp_model.fit(data, data.val_mask, data.train_mask, cal_wdecay)
-            with torch.no_grad():
-                temp_model.eval()
-                logits = temp_model(data.x, data.edge_index)
-                log_prob = F.log_softmax(logits, dim=1).detach()
+        
+        ### Train the calibrator on validation set and validate it on the training set
+        cal_wdecay = args.cal_wdecay if args.cal_wdecay is not None else default_cal_wdecay(args)
+        temp_model.fit(data, data.val_mask, data.train_mask, cal_wdecay)
+        with torch.no_grad():
+            temp_model.eval()
+            logits = temp_model(data.x, data.edge_index)
+            log_prob = F.log_softmax(logits, dim=1).detach()
 
         # Store calibrated result
         if args.save_prediction:
             save_prediction(log_prob.cpu().numpy(), args.dataset, args.split_type, split, init, fold, args.model, args.calibration)
 
-        # print(f'split{split} init{init} fold{fold}: temperature scale is {temp_model.temperature.detach().cpu().numpy().item()}')
         ### The training set is the validation set for the calibrator
-
         for eval_type in eval_type_list:
             eval_result, _ = eval(data, logits, 'Train')
             for metric in eval_result:
                 cal_val_result[eval_type][metric].append(eval_result[metric])
 
         for eval_type in eval_type_list:
-            eval_result, reliability = eval(data, logits, 'Test')
+            eval_result, reliability_cal = eval(data, logits, 'Test')
             for metric in eval_result:
                 cal_test_result[eval_type][metric].append(eval_result[metric])
         torch.cuda.empty_cache()
-    return uncal_test_result, cal_val_result, cal_test_result
+    return uncal_test_result, cal_val_result, cal_test_result, reliability_uncal, reliability_cal
 
-def per_ratio_ece(ratio, max_splits, max_init, is_delete=False, is_add=False):
+def per_ratio_ece(ratio, max_splits, max_init, is_delete=False, is_add=False, ratio_name=None, is_save_calfig=False):
 
     uncal_test_total = create_nested_defaultdict(eval_type_list)
     cal_val_total = create_nested_defaultdict(eval_type_list)
     cal_test_total = create_nested_defaultdict(eval_type_list)
+    reliabilities_uncal, reliabilities_cal = [], []
+    
     for split in range(max_splits):
         for init in range(max_init):
             # print(split, init)
             (uncal_test_result,
              cal_val_result,
-             cal_test_result) = main(split, init, eval_type_list, ratio, is_delete, is_add, args)
+             cal_test_result,
+             reliability_uncal,
+             reliability_cal) = main(split, init, eval_type_list, ratio, ratio_name, is_delete, is_add, args)
+            
+            reliabilities_uncal.append(reliability_uncal)
+            reliabilities_cal.append(reliability_cal)
+
             for eval_type, eval_metric in uncal_test_result.items():
                 for metric in eval_metric:
                     uncal_test_total[eval_type][metric].extend(uncal_test_result[eval_type][metric])
@@ -250,7 +241,7 @@ def per_ratio_ece(ratio, max_splits, max_init, is_delete=False, is_add=False):
     test_mean_ece = []
 
     # print results
-    for name, result in zip(['Uncal', args.calibration], [uncal_test_total, cal_test_total]):
+    for name, result, reliability in zip(['Uncal', args.calibration], [uncal_test_total, cal_test_total], [reliabilities_uncal, reliabilities_cal]):
         print(name)
         for eval_type in eval_type_list:
             test_mean = metric_mean(result[eval_type])
@@ -263,6 +254,16 @@ def per_ratio_ece(ratio, max_splits, max_init, is_delete=False, is_add=False):
                                 f"KDE: &{test_mean['kde']:.2f}$\pm${test_std['kde']:.2f}")
         # test_mean['ece'] with ratio
         test_mean_ece.append(test_mean['ece'])
+
+        # save the calibration figure
+        if is_save_calfig:
+            parent_fold = os.path.join('/root/ytx/calibration-gnn/GATS/figure/confidence_acc/modify_edge/', args.dataset, args.model, name)
+            dir = Path(parent_fold)
+            dir.mkdir(parents=True, exist_ok=True)
+            save_pth_fig = dir / (ratio_name + '.png')
+            print(save_pth_fig)
+            plot_reliabilities(reliability, title=args.dataset, saveto=save_pth_fig)  
+    
     return test_mean_ece
 
 
@@ -276,8 +277,8 @@ if __name__ == '__main__':
     eval_type_list = ['Nodewise']
     max_splits,  max_init = 3, 2
     delete_ratio_list = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    # add_ratio_list = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-    add_iteration_list = [0, 20, 60, 100, 140, 180, 220, 260, 300, 500, 1000]
+    add_num_list = [0, 20, 50, 80, 110, 140, 170, 200, 230, 260, 300]
+    
     delete_edge_ece_uncal = []
     delete_edge_ece_cal = []
     add_edge_ece_uncal = []
@@ -285,7 +286,8 @@ if __name__ == '__main__':
     print(f'-----------------------------------training with {args.model} on {args.dataset}-----------------------------------')
     if args.is_edge_delete:
         for delete_ratio in delete_ratio_list:
-            de_ece = per_ratio_ece(delete_ratio, max_splits, max_init, is_delete=True)
+            ratio_name = 'delete_'+ str(delete_ratio)
+            de_ece = per_ratio_ece(delete_ratio, max_splits, max_init, is_delete=True, ratio_name=ratio_name, is_save_calfig=True)
             delete_edge_ece_uncal.append(de_ece[0])
             delete_edge_ece_cal.append(de_ece[1])
         print('----------------------------------------------------------------------------')
@@ -296,8 +298,9 @@ if __name__ == '__main__':
         # draw_del_ratio_ece(delete_ratio_list, delete_edge_ece_uncal, delete_edge_ece_cal, title='delete-Edge ECE Comparison', save_path='/root/GATS/figure/del_edge_ece.png')
 
     elif args.is_edge_add:
-        for add_iter in add_iteration_list:
-            add_ece = per_ratio_ece(add_iter, max_splits, max_init, is_add=True)
+        for add_num in add_num_list:
+            ratio_name = 'add_' + str(add_num)
+            add_ece = per_ratio_ece(add_num, max_splits, max_init, is_add=True, ratio_name=ratio_name, is_save_calfig=True)
             add_edge_ece_uncal.append(add_ece[0])
             add_edge_ece_cal.append(add_ece[1])
         print('----------------------------------------------------------------------------')
