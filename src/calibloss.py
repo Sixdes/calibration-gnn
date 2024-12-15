@@ -115,6 +115,11 @@ class NodewiseNLL(NodewiseMetric):
         nodegts = gts[self.node_index]
         return nnf.cross_entropy(nodelogits, nodegts)
 
+class NodewiseConf(NodewiseMetric):
+    def forward(self, logits: Tensor, gts: LongTensor) -> Tensor:
+        nodelogits = logits[self.node_index]
+        nodeconfs, _ = torch.softmax(nodelogits, -1).max(dim=-1)
+        return nodeconfs.mean()
 
 class NodewiseBrier(NodewiseMetric):
     def forward(self, logits: Tensor, gts: LongTensor) -> Tensor:

@@ -9,7 +9,7 @@ from torch_geometric.data import Dataset
 from torch_geometric.datasets import Planetoid, Amazon, Coauthor, CoraFull
 from torch_geometric.io.planetoid import index_to_mask
 from torch_geometric.transforms import NormalizeFeatures
-from src.data.split import get_idx_split
+from src.data.split import get_idx_split, sample_per_class
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -72,6 +72,97 @@ def load_data(name: str, split_type: str, split: int, fold: int) -> Dataset:
         dataset = CoraFull(root='./data/', transform=transform)
         load_split_from_numpy_files(dataset, name, split_type, split, fold)
     return dataset
+
+def load_base_data(name: str) -> Dataset:
+    """
+    name: str, the name of the dataset
+    """
+    transform = NormalizeFeatures()
+    if name in ['Cora','Citeseer', 'Pubmed']:
+        dataset = Planetoid(root='./data/', name=name, transform=transform)
+
+    elif name in ['Computers', 'Photo']:
+        dataset = Amazon(root='./data/', name=name, transform=transform)
+
+    elif name in ['CS', 'Physics']:
+        dataset = Coauthor(root='./data/', name=name, transform=transform)
+
+    elif name == 'CoraFull':
+        dataset = CoraFull(root='./data/', transform=transform)
+    return dataset
+
+def load_data_cagcn(name: str, 
+                        labelrate: int) -> Dataset:
+    transform = NormalizeFeatures()
+    if name in ['Cora','Citeseer', 'Pubmed']:
+        dataset = Planetoid(root='./data/', name=name, transform=transform)
+        data = dataset.data
+        if labelrate != 20:
+            labelrate -= 20
+            nclass = dataset.num_classes
+            start = int(torch.where(data.val_mask==True)[0][-1] + 1)
+            data.train_mask[start:start+labelrate*nclass] = True
+    else: 
+        raise ValueError(f'unrecognized dataset: {name}')
+    return dataset
+
+def load_data_labelrate(name: str, 
+                        label_rate: int, 
+                        num_val_nodes: int = 500, 
+                        num_test_nodes: int = 1000) -> Dataset:
+    """
+    name: str, the name of the dataset
+    label_rate: int, sample per class of the train dataset.
+    num_val_nodes: int, num of the validation dataset. Defaults to 500. 
+    num_test_nodes: int, num of the test dataset. Defaults to 1000. 
+    """
+    transform = NormalizeFeatures()
+    if name in ['Cora','Citeseer', 'Pubmed']:
+        dataset = Planetoid(root='./data/', name=name, transform=transform)
+
+    elif name in ['Computers', 'Photo']:
+        dataset = Amazon(root='./data/', name=name, transform=transform)
+
+    elif name in ['CS', 'Physics']:
+        dataset = Coauthor(root='./data/', name=name, transform=transform)
+
+    elif name == 'CoraFull':
+        dataset = CoraFull(root='./data/', transform=transform)
+    
+    data = dataset.data
+    data.train_mask, data.val_mask, data.test_mask = create_rate_split(dataset, label_rate, num_val_nodes, num_test_nodes)
+
+    return dataset
+
+def create_rate_split(dataset: Dataset, 
+                      label_rate: int, 
+                      num_val_nodes: int, 
+                      num_test_nodes: int) -> torch.Tensor:
+    
+    num_classes = dataset.num_classes
+    data = dataset.data
+    num_nodes = data.num_nodes
+    labels = data.y.numpy()
+
+    train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    
+    for class_idx in range(num_classes):
+        class_indices = np.where(labels == class_idx)[0]
+        selected_indices = np.random.choice(class_indices, size=label_rate, replace=False)
+        train_mask[selected_indices] = True
+        
+    train_indices = np.where(train_mask)[0]
+    remain_indices = np.setdiff1d(np.arange(num_nodes), train_indices)
+    val_indices = np.random.choice(remain_indices, size=num_val_nodes, replace=False)
+    val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    val_mask[val_indices] = True
+
+    remain_indices = np.setdiff1d(remain_indices, val_indices)
+    test_indices = np.random.choice(remain_indices, size=num_test_nodes, replace=False)
+    test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    test_mask[test_indices] = True
+    
+    return train_mask, val_mask, test_mask
 
 def load_split_from_numpy_files(dataset, name, split_type, split, fold):
     """

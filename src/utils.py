@@ -60,6 +60,21 @@ def arg_parse(add_method=None):
     parser.add_argument('--gamma', type=float, default=0.01)
     # vis
     # parser.add_argument('--is_draw_reliability', action='store_true', default=False, help='Draw Acc-Confidence Fig')
+    # DCGC
+    parser.add_argument('--dcgc_alpha', type=float, default=0.5)
+    parser.add_argument('--dcgc_beta', type=float, default=10)
+    parser.add_argument('--dcgc_dropout', type=float, default=0.7,
+                    help='Dropout rate (1 - keep probability).')
+    
+    # modify edge
+    parser.add_argument('--is_edge_delete', action='store_true', default=False)
+    parser.add_argument('--is_edge_add', action='store_true', default=False)
+
+    # labelrate-setting
+    parser.add_argument('--labelrate', type=int, default=60, help='sample per class from traindata')
+    parser.add_argument('--num_val_nodes', type=int, default=500, help='num of val data')
+    parser.add_argument('--num_test_nodes', type=int, default=1000, help='num of test data')
+
 
     if add_method:
         add_method(parser)
@@ -164,14 +179,14 @@ def plot_reliabilities(
             for r in reliabilities]
     masks = [r[2].cpu().numpy() > 0 for r in reliabilities]
 
-    nonzero_counts = np.sum(np.asarray(masks, dtype=np.long), axis=0)
+    nonzero_counts = np.sum(np.asarray(masks, dtype=np.int64), axis=0)
     conf_mean = np.sum(
-        np.asarray(confs), axis=0) / (nonzero_counts + np.finfo(np.float).tiny)
+        np.asarray(confs), axis=0) / (nonzero_counts + np.finfo(np.float64).tiny)
     acc_mean = np.sum(
-        np.asarray(accs), axis=0) / (nonzero_counts + np.finfo(np.float).tiny)
+        np.asarray(accs), axis=0) / (nonzero_counts + np.finfo(np.float64).tiny)
     acc_std = np.sqrt(
         np.sum(np.asarray(accs) ** 2, axis=0)
-        / (nonzero_counts + np.finfo(np.float).tiny)
+        / (nonzero_counts + np.finfo(np.float64).tiny)
         - acc_mean ** 2)
     conf_mean = conf_mean[nonzero_counts > 0]
     acc_mean = acc_mean[nonzero_counts > 0]
@@ -201,3 +216,99 @@ def plot_reliabilities(
     ax1.set_aspect(1)
     Path("plots").mkdir(parents=True, exist_ok=True)
     plt.savefig(saveto, bbox_inches='tight', pad_inches=0)
+    plt.close()
+
+def plot_ece():
+    categories = ['GCN-uncal', 'TS', 'LogNorm-TS', 'GATS']
+    data1 = [7.73, 4.25, 5.43, 4.00]
+    data2 = [8.35, 5.64, 6.60, 5.27]
+    data3 = [4.35, 1.30, 1.76, 1.00]
+
+    bar_width = 2
+
+    x = np.array([0, 12, 24, 36])
+
+    plt.bar(x, data1, width=bar_width, label='Cora')
+    plt.bar(x + bar_width, data2, width=bar_width, label='Citeseer')
+    plt.bar(x + bar_width*2, data3, width=bar_width, label='Pubmed')
+
+    plt.xlabel('Calibration')
+    plt.ylabel('ECE')
+
+    plt.xticks(x + bar_width / 2, categories)
+    plt.legend()
+
+    plt.savefig('./figure/pic-ece.png')
+    # plt.show()
+
+def draw_del_ratio_ece(ratio_list, ece_uncal_cora, ece_cal_cora, 
+                       ece_uncal_citeseer, ece_cal_citeseer, 
+                       ece_uncal_pubmed, ece_cal_pubmed, title, save_path='line_graph.png'):
+    """
+    绘制折线图用于比较ratio-ECE，并保存图像。
+
+    Args:
+        ratio_list (list): 横轴 ratio 的变化
+        ece_uncal_dataset (list): 未校准 ECE 值
+        ece_cal_dataset (list): 校准 ECE 值
+        save_path (str): 保存图像的路径和文件名
+    """
+    plt.figure(figsize=(12, 8))
+    
+    plt.plot(ratio_list, ece_uncal_cora, marker='o', label='Uncal-Cora', color='steelblue', linestyle='-')
+    plt.plot(ratio_list, ece_cal_cora, marker='o', markerfacecolor='white', label='Cal-TS-Cora', color='steelblue', linestyle='--')
+    
+    plt.plot(ratio_list, ece_uncal_citeseer, marker='o', label='Uncal-Citeseer', color='goldenrod', linestyle='-')
+    plt.plot(ratio_list, ece_cal_citeseer, marker='o', markerfacecolor='white', label='Cal-TS-Citeseer', color='goldenrod', linestyle='--')
+    
+    plt.plot(ratio_list, ece_uncal_pubmed, marker='o', label='Uncal-Pubmed', color='mediumpurple', linestyle='-')
+    plt.plot(ratio_list, ece_cal_pubmed, marker='o', markerfacecolor='white', label='Cal-TS-Pubmed', color='mediumpurple', linestyle='--')
+    
+    plt.title(title)
+    plt.xlabel('Ratio', fontsize=16)
+    plt.ylabel('ECE', fontsize=16)
+    
+    plt.legend(loc='upper right')
+    plt.grid(linestyle='-.')
+
+    plt.savefig(save_path)
+    print(f"Image save to {save_path}")
+
+def draw_add_ratio_ece(iteration_list, ece_uncal_cora, ece_cal_cora, 
+                       ece_uncal_citeseer, ece_cal_citeseer, 
+                       ece_uncal_pubmed, ece_cal_pubmed, title, save_path='line_graph.png'):
+    """
+    绘制折线图用于比较ratio-ECE，并保存图像。
+
+    Args:
+        ratio_list (list): 横轴 ratio 的变化
+        ece_uncal_dataset (list): 未校准 ECE 值
+        ece_cal_dataset (list): 校准 ECE 值
+        save_path (str): 保存图像的路径和文件名
+    """
+    plt.figure(figsize=(12, 8))
+    
+    plt.plot(iteration_list, ece_uncal_cora, marker='o', label='Uncal-Cora', color='steelblue', linestyle='-')
+    plt.plot(iteration_list, ece_cal_cora, marker='o',  markerfacecolor='white', label='Cal-TS-Cora', color='steelblue', linestyle='--')
+    
+    plt.plot(iteration_list, ece_uncal_citeseer, marker='o', label='Uncal-Citeseer', color='goldenrod', linestyle='-')
+    plt.plot(iteration_list, ece_cal_citeseer, marker='o',  markerfacecolor='white', label='Cal-TS-Citeseer', color='goldenrod', linestyle='--')
+    
+    plt.plot(iteration_list, ece_uncal_pubmed, marker='o', label='Uncal-Pubmed', color='mediumpurple', linestyle='-')
+    plt.plot(iteration_list, ece_cal_pubmed, marker='o',  markerfacecolor='white', label='Cal-TS-Pubmed', color='mediumpurple', linestyle='--')
+    
+    
+    plt.title(title)
+    plt.xlabel('Iteration', fontsize=16)
+    plt.ylabel('ECE', fontsize=16)
+    
+    plt.legend(loc='upper right')
+    plt.grid(linestyle='-.')
+
+    plt.savefig(save_path)
+    print(f"Image save to {save_path}")
+
+
+if __name__ == '__main__':
+    # plot_bar()
+    plot_ece()

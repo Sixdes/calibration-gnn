@@ -8,8 +8,6 @@ import gc
 from pathlib import Path
 from src.data.data_utils import load_data, load_node_to_nearest_training
 from src.model.model import create_model
-from src.calibrator.calibrator import \
-    TS, VS, ETS, CaGCN, GATS, IRM, SplineCalib, Dirichlet, OrderInvariantCalib, RBS_cal
 from src.calibloss import \
     NodewiseECE, NodewiseBrier, NodewiseNLL, Reliability, NodewiseKDE, \
     NodewiswClassECE, ECE
@@ -120,7 +118,6 @@ def main(split, init, eval_type_list, parent_pth, args):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     uncal_test_result = create_nested_defaultdict(eval_type_list)
     max_fold = int(args.split_type.split("_")[1].replace("f",""))
-    reliabilities = []
 
     for fold in range(max_fold):
         # Load data
@@ -146,12 +143,11 @@ def main(split, init, eval_type_list, parent_pth, args):
 
         for eval_type in eval_type_list:
             eval_result, reliability = eval(data, logits, 'Test')
-            reliabilities.append(reliability)
             for metric in eval_result:
                 uncal_test_result[eval_type][metric].append(eval_result[metric])
         torch.cuda.empty_cache()
 
-    return uncal_test_result, reliabilities
+    return uncal_test_result, reliability
 
 def arg_parse():
     parser = argparse.ArgumentParser(description='train.py and calibration.py share the same arguments')
@@ -190,6 +186,7 @@ if __name__ == '__main__':
     set_global_seeds(args.seed)
     eval_type_list = ['Nodewise']
     max_splits,  max_init = 5, 5
+    reliabilities = []
     
     uncal_test_total = create_nested_defaultdict(eval_type_list)
     print(f"---------The {args.model_retrain_name}-{args.model} from the {args.dataset} is being evaluted--------- ")
@@ -199,14 +196,14 @@ if __name__ == '__main__':
     for split in range(max_splits):
         for init in range(max_init):
             # print(split, init)
-            uncal_test_result, reliabilities = main(split, init, eval_type_list, parent_dir, args)
-    
+            uncal_test_result, reliability = main(split, init, eval_type_list, parent_dir, args)
+            reliabilities.append(reliability)
     if args.is_draw_reliability:
         if args.model_retrain_name == 'latest':
             title = args.dataset+'_'+args.model
         else:
             title = args.dataset+'_'+args.model_retrain_name
-        save_pth = '/root/GATS/figure/'+title+'.png'
+        save_pth = '/root/ytx/calibration-gnn/GATS/figure/confidence_acc/original/'+title+'.png'
         print(save_pth)
         plot_reliabilities(reliabilities, title=args.dataset, saveto=save_pth)
     

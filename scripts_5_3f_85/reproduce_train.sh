@@ -1,9 +1,9 @@
 #!/bin/sh
 
-#CoraFull
-for dataset in Cora Citeseer Pubmed Computers Photo CS Physics 
+#CoraFull Computers Photo CS Physics
+for dataset in Cora Citeseer Pubmed  
 
-do for model in GCN GAT
+do for model in GCN 
 
 do
 
@@ -12,7 +12,7 @@ case $dataset in
     *)                    wdecay=0;;
 esac
 
-PYTHONPATH=. python src/train.py --dataset $dataset\
+PYTHONPATH=. python src/5_3f_85_setting/train.py --dataset $dataset\
         --model $model \
         --wdecay $wdecay
 done

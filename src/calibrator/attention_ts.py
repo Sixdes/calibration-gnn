@@ -8,8 +8,8 @@ from torch.nn import Parameter
 from torch_geometric.nn.dense.linear import Linear
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.utils import remove_self_loops, add_self_loops, softmax, degree
-# from src.data.data_utils import shortest_path_length
-from data.data_utils import shortest_path_length
+from src.data.data_utils import shortest_path_length
+# from data.data_utils import shortest_path_length
 
 
 class CalibAttentionLayer(MessagePassing):

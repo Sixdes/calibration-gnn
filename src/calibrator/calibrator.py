@@ -14,6 +14,7 @@ from src.model.model import GCN
 from src.calibrator import rbs
 
 from torch_geometric.utils import to_networkx
+from torch_geometric.nn import MLP
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -31,13 +32,13 @@ def intra_distance_loss(output, labels):
     correct_loss = torch.sum(1- pred[correct_i] + sub_pred[correct_i]) / labels.size(0)
     return incorrect_loss + correct_loss
 
-def fit_calibration(temp_model, eval, data, train_mask, test_mask, patience = 100):
+def fit_calibration(temp_model, eval, data, train_mask, test_mask, edge_weight=None, patience = 100):
     """
     Train calibrator
     """    
     vlss_mn = float('Inf')
     with torch.no_grad():
-        logits = temp_model.model(data.x, data.edge_index)
+        logits = temp_model.model(data.x, data.edge_index, edge_weight)
         labels = data.y
         edge_index = data.edge_index
         model_dict = temp_model.state_dict()
@@ -73,6 +74,42 @@ def fit_calibration(temp_model, eval, data, train_mask, test_mask, patience = 10
     model_dict.update(state_dict_early_model)
     temp_model.load_state_dict(model_dict)
 
+def fit_calibration_dcgc(temp_model, data, train_mask, test_mask, edge_weight=None, patience = 100):
+    """
+    Train calibrator dcgc
+    """    
+    vlss_mn = float('Inf')
+
+    labels = data.y
+    model_dict = temp_model.state_dict()
+    parameters = {k: v for k,v in model_dict.items() if k.split(".")[0] != "model"}
+    for epoch in range(2000):
+
+        temp_model.train()
+        temp_model.optimizer.zero_grad()
+        logits = temp_model(data.x, data.edge_index, edge_weight)
+        # Post-hoc calibration set the classifier to the evaluation mode
+        # temp_model.model.eval()
+        # assert not temp_model.model.training
+        
+        loss = F.cross_entropy(logits[train_mask], labels[train_mask])
+        loss.backward()
+        temp_model.optimizer.step()
+
+        with torch.no_grad():
+            temp_model.eval()
+            
+            val_loss = F.cross_entropy(logits[test_mask], labels[test_mask])
+            if val_loss <= vlss_mn:
+                state_dict_early_model = copy.deepcopy(parameters)
+                vlss_mn = np.min((val_loss.cpu().numpy(), vlss_mn))
+                curr_step = 0
+            else:
+                curr_step += 1
+                if curr_step >= patience:
+                    break
+    model_dict.update(state_dict_early_model)
+    temp_model.load_state_dict(model_dict)
 
 class TS(nn.Module):
     def __init__(self, model):
@@ -80,8 +117,8 @@ class TS(nn.Module):
         self.model = model
         self.temperature = nn.Parameter(torch.ones(1) * 1.5)
 
-    def forward(self, x, edge_index):
-        logits = self.model(x, edge_index)
+    def forward(self, x, edge_index, edge_weight=None):
+        logits = self.model(x, edge_index, edge_weight)
         temperature = self.temperature_scale(logits)
         return logits / temperature
 
@@ -92,7 +129,7 @@ class TS(nn.Module):
         temperature = self.temperature.unsqueeze(1).expand(logits.size(0), logits.size(1))
         return temperature
 
-    def fit(self, data, train_mask, test_mask, wdecay):
+    def fit(self, data, train_mask, test_mask, wdecay, edge_weight=None):
         self.to(device)
         def eval(logits):
             temperature = self.temperature_scale(logits)
@@ -101,7 +138,7 @@ class TS(nn.Module):
 
         self.train_param = [self.temperature]
         self.optimizer = optim.Adam(self.train_param, lr=0.01, weight_decay=wdecay)
-        fit_calibration(self, eval, data, train_mask, test_mask)
+        fit_calibration(self, eval, data, train_mask, test_mask, edge_weight=edge_weight)
         return self
 
 
@@ -241,8 +278,8 @@ class GATS(nn.Module):
                                          heads=gats_args.heads,
                                          bias=gats_args.bias)
 
-    def forward(self, x, edge_index):
-        logits = self.model(x, edge_index)
+    def forward(self, x, edge_index, edge_weight=None):
+        logits = self.model(x, edge_index, edge_weight)
         temperature = self.graph_temperature_scale(logits)
         return logits / temperature
 
@@ -253,7 +290,7 @@ class GATS(nn.Module):
         temperature = self.cagat(logits).view(self.num_nodes, -1)
         return temperature.expand(self.num_nodes, logits.size(1))
 
-    def fit(self, data, train_mask, test_mask, wdecay):
+    def fit(self, data, train_mask, test_mask, wdecay, edge_weight=None):
         self.to(device)
         def eval(logits):
             temperature = self.graph_temperature_scale(logits)
@@ -262,7 +299,7 @@ class GATS(nn.Module):
 
         self.train_param = self.cagat.parameters()
         self.optimizer = optim.Adam(self.train_param, lr=0.01, weight_decay=wdecay)
-        fit_calibration(self, eval, data, train_mask, test_mask)
+        fit_calibration(self, eval, data, train_mask, test_mask, edge_weight=edge_weight)
         return self
 
 
@@ -657,5 +694,144 @@ class OrderInvariantCalib(nn.Module):
             self, self.calibrate, data, train_mask, test_mask)
         return self
 
+class Edge_Weight(torch.nn.Module):
+    def __init__(self, model, out_channels, dropout):
+        super(Edge_Weight, self).__init__()
+        self.model = model
+        self.extractor = MLP([out_channels*2, out_channels*4, 1], dropout=dropout)
+
+        for para in self.model.parameters():
+            para.requires_grad = False
+
+    def forward(self, x, edge_index, edge_weight=None):
+        if edge_weight is None:
+            edge_weight = self.get_weight(x, edge_index)
+        logist = self.model(x, edge_index, edge_weight)
+        return logist
+    
+    def fit(self, data, train_mask, test_mask, wdecay, lr=0.01, edge_weight=None):
+        self.to(device)
+        self.optimizer = optim.Adam(self.extractor.parameters(),lr=lr, weight_decay=wdecay)
+        fit_calibration_dcgc(self, data, train_mask, test_mask, edge_weight=edge_weight)
+        return self
+
+    def get_weight(self, x, edge_index):
+
+        emb = self.model(x, edge_index)
+        col, row = edge_index
+        f1, f2 = emb[col], emb[row]
+        f12 = torch.cat([f1, f2], dim=-1)
+        edge_weight = self.extractor(f12)
+        return edge_weight.relu()
 
 
+class RBS_cal(nn.Module):
+    def __init__(self, model, dataset, num_classes, num_bins):
+        super().__init__()
+        self.model = model
+        self.num_classes = num_classes
+        self.num_bins = num_bins
+        self.dataset = dataset
+        self.T_list = []
+        self.temperature = nn.Parameter(torch.ones(num_bins))
+
+    def forward(self, x, edge_index):
+        logits = self.model(x, edge_index)
+        conf_AP = self.agg_prob(self.dataset.data, logits)
+        # notice the conf_AP  train_mask test_mask val_mask
+        sm_TS_model = bin_mask_eqdis(self.num_bins, conf_AP)
+        bins_mask_list = sm_TS_model.get_samples_mask_bins()
+
+        cal_probs = torch.softmax(
+            self.get_rescaled_logits(self.temperature, logits, bins_mask_list), 1
+        )
+        return cal_probs
+
+    def get_rescaled_logits(self, temperature, logits, bins_mask_list):
+        T = torch.zeros_like(logits)
+        for i in range(self.num_bins):
+            # The i-th bin logits
+            logits_i = logits[bins_mask_list[i]]
+            # Expand temperature to match the size of logits
+            T_i = temperature[i].expand(logits_i.size(0), logits_i.size(1))
+            T[bins_mask_list[i], :] = T_i.float()
+        logits0 = logits / T
+        return logits0
+
+    def agg_prob(self, data, logits):
+        # Calculate agg. probs
+        graph = to_networkx(data)
+        A = self.create_adjacency_matrix(graph).todense()
+        AP = A * logits.numpy()
+        AP = torch.tensor(AP)
+        num_neighbors = A.sum(1)
+        num_neighbors = torch.tensor(num_neighbors)
+        AP[torch.where(num_neighbors == 0)[0]] = 1
+        num_neighbors[torch.where(num_neighbors == 0)[0]] = 1
+        y_pred = logits.max(1)[1]
+        AP = AP / num_neighbors.expand(AP.shape[0], AP.shape[1])
+        # conf_AP = []
+        # for i in range(AP.shape[0]):
+        #     conf_AP.append(AP[i, y_pred[i]])
+        conf_AP = AP[torch.arange(AP.shape[0]), y_pred]
+        return conf_AP
+
+    def fit(self, data, train_mask, test_mask, wdecay):
+        self.to(device)
+        logits = self.model(data.x, data.edge_index)
+        conf_AP = self.agg_prob(data, logits)
+        sm_TS_model = bin_mask_eqdis(self.num_bins, conf_AP)
+        bins_mask_list = sm_TS_model.get_samples_mask_bins()
+
+        def eval(logits):
+            calibrated = self.get_rescaled_logits(self.temperature, logits, bins_mask_list)
+            
+            return calibrated
+        self.train_param = [self.temperature]
+        self.optimizer = optim.Adam(self.train_param, lr=0.01, weight_decay=wdecay)
+        fit_calibration(self, eval, data, train_mask, test_mask)
+        
+        return self
+    
+    def create_adjacency_matrix(graph):
+        index_1 = [edge[0] for edge in graph.edges()] + [
+            edge[1] for edge in graph.edges()
+        ]
+        index_2 = [edge[1] for edge in graph.edges()] + [
+            edge[0] for edge in graph.edges()
+        ]
+        values = [1 for edge in index_1]
+        node_count = max(max(index_1) + 1, max(index_2) + 1)
+        A = scipy.sparse.coo_matrix(
+            (values, (index_1, index_2)),
+            shape=(node_count, node_count),
+            dtype=np.float32,
+        )
+        return A
+
+class bin_mask_eqdis(nn.Module):
+    def __init__(self, num_bins, sm_vector):
+        super(bin_mask_eqdis, self).__init__()
+        if not torch.is_tensor(sm_vector):
+            self.sm_vector = torch.tensor(sm_vector)
+        if torch.cuda.is_available():
+            self.sm_vector = self.sm_vector.clone().cuda()
+        self.num_bins = num_bins
+        self.bins = []
+        self.get_equal_bins()
+
+    def get_equal_bins(self):
+        for i in range(self.num_bins):
+            self.bins.append(torch.tensor(1 / self.num_bins * (i + 1)))
+
+    def get_samples_mask_bins(self):
+        mask_list = []
+        for i in range(self.num_bins):
+            if i == 0:
+                mask_list.append(self.sm_vector <= self.bins[i])
+            else:
+                mask_list.append(
+                    (self.bins[i - 1] < self.sm_vector)
+                    * (self.sm_vector <= self.bins[i])
+                )
+        return mask_list

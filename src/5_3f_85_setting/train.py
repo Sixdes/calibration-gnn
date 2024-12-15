@@ -84,8 +84,11 @@ def main(split, init, args):
 
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         model = create_model(dataset, args).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=args.wdecay)
-        
+        # optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=args.wdecay)
+        optimizer = torch.optim.Adam([
+                dict(params=model.layer_list.conv1.parameters(), weight_decay=5e-4),
+                dict(params=model.layer_list.conv2.parameters(), weight_decay=0)
+            ], lr=lr)
         # print(model)
         data = data.to(device)
         criterion = torch.nn.CrossEntropyLoss()
@@ -145,7 +148,7 @@ def main(split, init, args):
 
 
         # print("best epoch is:", b_epoch)
-        dir = Path(os.path.join('model', args.dataset, args.split_type, 'split'+str(split), 
+        dir = Path(os.path.join('model_5_3f_85/model_hd64_op_drop', args.dataset, args.split_type, 'split'+str(split), 
                                 'init'+ str(init)))
         dir.mkdir(parents=True, exist_ok=True)
         file_name = dir / (model_name + '.pt')

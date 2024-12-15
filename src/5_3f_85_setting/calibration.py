@@ -8,7 +8,7 @@ from pathlib import Path
 from src.data.data_utils import load_data, load_node_to_nearest_training
 from src.model.model import create_model
 from src.calibrator.calibrator import \
-    TS, VS, ETS, CaGCN, GATS, IRM, SplineCalib, Dirichlet, OrderInvariantCalib
+    TS, VS, ETS, CaGCN, GATS, IRM, SplineCalib, Dirichlet, OrderInvariantCalib, RBS_cal
 from src.calibloss import \
     NodewiseECE, NodewiseBrier, NodewiseNLL, Reliability, NodewiseKDE, \
     NodewiswClassECE
@@ -130,7 +130,7 @@ def main(split, init, eval_type_list, args):
         # Load model
         model = create_model(dataset, args).to(device)
         model_name = name_model(fold, args)
-        dir = Path(os.path.join('model_lognorm', args.dataset, args.split_type, 'split'+str(split), 'init'+ str(init)))
+        dir = Path(os.path.join('model_latest', args.dataset, args.split_type, 'split'+str(split), 'init'+ str(init)))
         file_name = dir / (model_name + '.pt')
         model.load_state_dict(torch.load(file_name))
         torch.cuda.empty_cache()
@@ -165,6 +165,8 @@ def main(split, init, eval_type_list, args):
             temp_model = VS(model, dataset.num_classes)
         elif args.calibration == 'ETS':
             temp_model = ETS(model, dataset.num_classes)
+        # elif args.calibration == 'RBS-cal':
+        #     temp_model = RBS_cal(model, dataset, dataset.num_classes, args.num_bins_rbs)
         elif args.calibration == 'CaGCN':
             temp_model = CaGCN(model, data.num_nodes, dataset.num_classes, args.cal_dropout_rate)
         elif args.calibration == 'GATS':
@@ -198,7 +200,7 @@ def main(split, init, eval_type_list, args):
         if args.save_prediction:
             save_prediction(log_prob.cpu().numpy(), args.dataset, args.split_type, split, init, fold, args.model, args.calibration)
 
-        print(f'split{split} init{init} fold{fold}: temperature scale is {temp_model.temperature.detach().cpu().numpy().item()}')
+        # print(f'split{split} init{init} fold{fold}: temperature scale is {temp_model.temperature.detach().cpu().numpy().item()}')
         ### The training set is the validation set for the calibrator
 
         for eval_type in eval_type_list:
@@ -220,7 +222,6 @@ if __name__ == '__main__':
     set_global_seeds(args.seed)
     eval_type_list = ['Nodewise']
     max_splits,  max_init = 5, 5
-    print(f'-------logits-norm with temperature scaling----------')
 
     uncal_test_total = create_nested_defaultdict(eval_type_list)
     cal_val_total = create_nested_defaultdict(eval_type_list)

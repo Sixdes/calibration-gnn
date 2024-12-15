@@ -160,7 +160,7 @@ def main(split, init, ratio, is_delete, is_add, args):
         elif is_add:
             ratio_name = 'add_'+str(ratio)
         # print("best epoch is:", b_epoch)
-        dir = Path(os.path.join('model_modify_edge_all', args.dataset, ratio_name, 'split'+str(split), 
+        dir = Path(os.path.join('model_5_3f_85/model_modify_edge_all_hd64_op_drop', args.dataset, ratio_name, 'split'+str(split), 
                                 'init'+ str(init)))
         dir.mkdir(parents=True, exist_ok=True)
         file_name = dir / (model_name + '.pt')
